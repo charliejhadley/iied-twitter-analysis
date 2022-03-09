@@ -1,0 +1,385 @@
+---
+title: "IIED Twitter Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rtweet)
+library(gt)
+library(tidyverse)
+library(gtools)
+```
+
+# Get data
+
+## Tweets mentioning 
+
+```{r, eval=FALSE}
+tweets_mention_iied = search_tweets(
+  "IIED",    # the #hashtag or phrase you want to search
+  n = 4000,              # number of tweets to capture
+  type = "recent",       # recent | mixed | popular
+  include_rts = FALSE,   # no retweets
+  verbose = TRUE,
+  retryonratelimit = FALSE,    # set to true if you want it to run again
+  lang = "en"            # English language tweets
+)
+tweets_mention_iied %>% 
+  write_rds("data/tweets_mention_iied.rds")
+```
+
+```{r, echi=FALSE}
+tweets_mention_iied <- read_rds("data/tweets_mention_iied.rds")
+```
+
+## Twitter timeline
+
+```{r, eval=FALSE}
+tweets_timeline_iied <- get_timeline(
+  user = "IIED",
+  n = 3200
+)
+tweets_timeline_iied %>% 
+  write_rds("data/tweets_timeline_iied.rds")
+```
+
+```{r, eval=FALSE}
+tweets_timeline_iied <- read_rds("data/tweets_timeline_iied.rds")
+```
+
+## Followers
+
+This is a more resource intensive process, as it downloads 64k profiles!
+
+```{r, eval=FALSE}
+accounts_followed_by_iied <- get_friends("iied", n = 7E4)
+
+accounts_following_iied <- get_followers("iied", n = 7E4)
+
+account_details_followed_by_iied <- lookup_users(accounts_followed_by_iied$user_id)
+
+account_details_followed_by_iied %>% 
+  write_rds("data/account_details_followed_by_iied.rds")
+
+account_details_following_iied <- lookup_users(accounts_following_iied$user_id)
+
+account_details_following_iied %>% 
+  write_rds("data/account_details_following_iied.rds")
+```
+
+```{r, echo=FALSE}
+account_details_following_iied <- read_rds("data/account_details_following_iied.rds") %>% 
+  select(user_id, description, everything()) 
+
+account_details_followed_by_iied <- read_rds("data/account_details_followed_by_iied.rds") %>% 
+  select(user_id, description, everything()) 
+```
+
+# What gets engagement?
+
+## Original tweets
+
+Let's look at your original tweets, ie those you've written yourself (including quote tweets!)
+
+```{r}
+original_iied_tweets <- tweets_timeline_iied %>% 
+  filter(is_retweet == FALSE)
+```
+
+```{r}
+original_iied_tweets %>% 
+  select(retweet_count, hashtags) %>% 
+  unnest(cols = hashtags) %>% 
+  filter(!is.na(hashtags)) %>% 
+  group_by(hashtags) %>% 
+  mutate(total_retweet_count = sum(retweet_count)) %>% 
+  ungroup() %>% 
+  select(hashtags, total_retweet_count) %>% 
+  unique() %>% 
+  filter(total_retweet_count > 20) %>% 
+  mutate(hashtags = fct_reorder(hashtags, total_retweet_count)) %>% 
+  ggplot(aes(x = total_retweet_count,
+             y = hashtags)) + 
+  geom_col() +
+  labs(title = "Total retweets for each hashtag from original tweets",
+       subtitle = "Note: If a tweet included both #COP26 and #PubsFriday each would be counted")
+```
+
+Here are all tweets with more than 20 retweets
+
+```{r}
+original_iied_tweets %>% 
+  select(text, retweet_count, status_url) %>% 
+  arrange(desc(retweet_count)) %>% 
+  filter(retweet_count > 20) %>% 
+  mutate(status_url = map(status_url, ~ htmltools::a(href = .x, "Tweet link")),
+        status_url = map(status_url, ~ gt::html(as.character(.x)))) %>% 
+  gt()
+```
+
+```{r}
+original_iied_tweets %>% 
+  select(text, retweet_count, status_url) %>% 
+  ggplot(aes(y = retweet_count,
+             x = "1")) +
+  ggdist::stat_halfeye(
+  ) + 
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA
+  ) +
+  gghalves::geom_half_point(
+    side = "l", 
+    range_scale = .4, 
+    alpha = .3
+  ) +
+  coord_flip() +
+  labs(title = "Full distribution of retweet counts for original tweets")
+```
+
+
+```{r}
+original_iied_tweets %>% 
+  select(retweet_count, is_quote) %>% 
+  ggplot(aes(y = retweet_count,
+             x = is_quote)) +
+  ggdist::stat_halfeye(
+  ) + 
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA
+  ) +
+  gghalves::geom_half_point(
+    side = "l", 
+    range_scale = .4, 
+    alpha = .3
+  ) +
+  coord_flip() +
+  scale_x_discrete(labels = c("TRUE" = "QUOTE TWEETS",
+                              "FALSE" = "ORIGINAL TWEETS")) +
+  labs(title = "Original tweets receive more retweets than quote tweets")
+```
+
+## Likes
+
+Here are all tweets with more than 20 retweets
+
+```{r}
+original_iied_tweets %>% 
+  select(text, favorite_count, status_url) %>% 
+  arrange(desc(favorite_count)) %>% 
+  filter(favorite_count > 40) %>% 
+  mutate(status_url = map(status_url, ~ htmltools::a(href = .x, "Tweet link")),
+        status_url = map(status_url, ~ gt::html(as.character(.x)))) %>% 
+  gt()
+```
+
+# Key Terms Analysis
+
+```{r}
+original_iied_tweets %>% 
+  mutate(contains_loss = str_detect(text, "loss")) %>% 
+  select(text, contains("contains_"), retweet_count, favorite_count) %>% 
+  filter(retweet_count > 0) %>% 
+  group_by(contains_loss) %>% 
+  summarise(mean_retweets = mean(retweet_count),
+            mean_favourites = mean(favorite_count))
+```
+
+# Sentiment
+
+```{r}
+library(tidytext)
+sentiment_dataset <- get_sentiments("afinn")
+sentiment_dataset <- arrange(sentiment_dataset, -value)
+```
+
+
+```{r}
+sentiment_original_iied_tweets <- original_iied_tweets %>% 
+  unnest_tokens(output = 'word', input = 'text', drop = FALSE) %>% 
+  left_join(sentiment_dataset)
+```
+
+
+```{r}
+hashtag_sentiment <- sentiment_original_iied_tweets %>% 
+  select(hashtags, word, value) %>% 
+  unnest(hashtags) %>% 
+  filter(!is.na(value),
+         !is.na(hashtags)) %>% 
+  mutate(has_positive = value > 0,
+         has_neutral = value == 0,
+         has_negative = value < 0)
+```
+
+```{r}
+hashtag_sentiment %>% 
+  select(hashtags, value) %>% 
+  add_count(hashtags) %>% 
+  unique() %>% 
+  filter(n > 40) %>% 
+  slice_max(value) %>% 
+  gt() %>% 
+  tab_header("Hashtags with MOST POSITIVE sentiment")
+```
+
+```{r}
+hashtag_sentiment %>% 
+  select(hashtags, value) %>% 
+  add_count(hashtags) %>% 
+  unique() %>% 
+  filter(n > 40) %>% 
+  slice_min(value) %>% 
+  gt() %>% 
+  tab_header("Hashtags with MOST NEGATIVE sentiment")
+```
+
+## Sentiment for specific words
+
+You'll want to look at sentiments for specific words. This code tries to be too clever for it's own good using  `value == min(value) | value == max(value)`. You'll likely need to manually set your sentiment levels.
+
+```{r}
+sentiment_original_iied_tweets %>% 
+  filter(str_detect(text, "IIED")) %>% 
+  select(word, value) %>% 
+  unique() %>% 
+  filter(!is.na(value)) %>% 
+  filter(value == min(value) | value == max(value)) %>% 
+  mutate(sentiment = ifelse(value > 0, "Positive", "Negative")) %>% 
+  ggplot(aes(x = value,
+             y = word)) +
+  geom_col() +
+  facet_wrap(~ sentiment,
+             scales = "free_y")
+```
+
+This chart makes use of reorder_within() and scale_y_reordered() to allow for ordering within facets, [see here for more details](https://juliasilge.com/blog/reorder-within/).
+
+```{r}
+sentiment_original_iied_tweets %>% 
+  filter(str_detect(text, "green")) %>% 
+  select(word, value) %>% 
+  unique() %>% 
+  filter(!is.na(value)) %>% 
+  filter(value %in% c(-3, 5, 4)) %>% 
+  mutate(sentiment = ifelse(value > 0, "Positive Positive", "Negative Sentiment")) %>% 
+  mutate(absolute_value = abs(value)) %>% 
+  mutate(word = reorder_within(word, absolute_value, sentiment)) %>% 
+  ggplot(aes(x = absolute_value,
+             y = word)) +
+  geom_col() +
+  scale_y_reordered() +
+  facet_wrap(~ sentiment,
+             scales = "free") +
+  labs(title = "Tweets from IIED containing 'green'")
+```
+
+# Gender analysis
+
+Twitter doesn't have a gender flag for profiles. Using name dictionaries is unreliable and denies diverse gender identities. However, many Twitter users declare their pronouns in bios which can be used for gender analysis.
+
+## Complicated Code (don't need to use)
+
+This code is complicated and attempts to search for all well recognised pronoun combinations
+
+```{r}
+singular_pronouns <- read_csv("data/singular-pronouns.csv") %>% 
+  mutate(pronoun_length = str_length(singular_pronoun)) %>% 
+  mutate(simplified_pronoun = case_when(
+    singular_pronoun == "he" ~ TRUE,
+    pronoun_length > 2 ~ TRUE,
+    TRUE ~ FALSE
+  ))
+
+simplified_pronouns <- singular_pronouns %>% 
+  filter(simplified_pronoun == TRUE)
+
+all_pronoun_pairings <- permutations(
+  n = length(unique(simplified_pronouns$singular_pronoun)),
+  r = 2,
+  v = unique(simplified_pronouns$singular_pronoun),
+  repeats.allowed = T
+) %>% 
+  as_tibble() %>%
+  filter(V1 != V2) %>% 
+  mutate(detect_pronoun_pairing = paste(V1, V2, sep = "/"),
+         extract_pronoun_pairing = str_glue("({V1})/({V2})"),
+         boundary_pronoun_pairing = str_glue("\\b{V1}/{V2}\\b"))
+
+regex_boundary_pronoun_pairings <- all_pronoun_pairings %>% 
+  pull(boundary_pronoun_pairing) %>% 
+  paste(collapse = "|") 
+```
+
+This function adds a lgl flag for if pronoun pairings are found, given a specific regex.
+
+```{r}
+add_pronoun_lgl <- function(data_twitter_profiles, regex_pronoun_pairings){
+  
+  data_twitter_profiles %>% 
+  mutate(
+    clean_description = str_replace_all(description, "丨", " "),
+    clean_description = str_replace_all(clean_description, "[:emoji:]", " "),
+    clean_description = map_chr(str_extract_all(clean_description, "[[A-Za-z0-9]]|/|[:whitespace:]|[\\w.,!'$#]"), ~ str_c(.x, collapse=""))
+  ) %>% 
+    mutate(pronoun_pairing_lgl = str_detect(clean_description, regex(regex_pronoun_pairings, ignore_case = TRUE)))
+  
+}
+```
+
+This function then parses the pronouns... this could be improved.
+
+```{r}
+parse_description_pronouns <- function(data_twitter_profiles){
+  
+  data_twitter_profiles %>% 
+    select(user_id, clean_description) %>% 
+    mutate(pronoun_pairing = str_extract(clean_description, regex(regex_boundary_pronoun_pairings, ignore_case = TRUE, multiline = TRUE)),
+           pronoun_pairing = str_trim(pronoun_pairing),
+           pronoun_pairing = str_to_lower(pronoun_pairing)) %>% 
+    mutate(gender_inferred = case_when(
+      str_detect(pronoun_pairing, "\\bshe|her\\b") ~ "female",
+      str_detect(pronoun_pairing, "\\bhe|him\\b") ~ "male",
+      is.na(pronoun_pairing) ~ NA_character_,
+      TRUE ~ "non-binary"
+    )) %>% 
+    mutate(gender_clean = case_when(
+      str_detect(pronoun_pairing, "she/her") ~ "female",
+      str_detect(pronoun_pairing, "he/him") ~ "male",
+      is.na(pronoun_pairing) ~ NA_character_,
+      TRUE ~ "non-binary"
+    ))
+  
+}
+```
+
+This code will likely take at least a few minutes to run
+
+```{r}
+genderered_accounts_following_iied <- account_details_following_iied %>% 
+  add_pronoun_lgl(regex_boundary_pronoun_pairings) %>% 
+  filter(pronoun_pairing_lgl == TRUE) %>%
+  parse_description_pronouns()
+```
+
+```{r}
+genderered_accounts_following_iied %>% 
+  count(gender_inferred)
+```
+
+## Simpler regex
+
+The complex portion of this has more options than are widely used. Here's a much smaller set of pronoun options that covers most of your current followers.
+
+```{r}
+account_details_following_iied %>% 
+  add_pronoun_lgl("\\bshe/her\\b|\\bthey/them\\b|\\bhe/him\\b|\\bhe/they\\b|\\bshe/they\\b|\\bshe/hers\\b|\\bhe/his\\b") %>% 
+  filter(pronoun_pairing_lgl == TRUE) %>%
+  parse_description_pronouns() %>% 
+  count(gender_inferred)
+```
+
+
+
