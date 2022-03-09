@@ -89,6 +89,17 @@ original_iied_tweets <- tweets_timeline_iied %>%
 
 ```{r}
 original_iied_tweets %>% 
+  select(text, hashtags) %>% 
+  unnest(hashtags)
+```
+
+```{r}
+starwars
+```
+
+
+```{r}
+original_iied_tweets %>% 
   select(retweet_count, hashtags) %>% 
   unnest(cols = hashtags) %>% 
   filter(!is.na(hashtags)) %>% 
@@ -179,7 +190,7 @@ original_iied_tweets %>%
 
 ```{r}
 original_iied_tweets %>% 
-  mutate(contains_loss = str_detect(text, "loss")) %>% 
+  mutate(contains_loss = str_detect(text, regex("evaluation", ignore_case = TRUE))) %>% 
   select(text, contains("contains_"), retweet_count, favorite_count) %>% 
   filter(retweet_count > 0) %>% 
   group_by(contains_loss) %>% 
@@ -194,6 +205,21 @@ library(tidytext)
 sentiment_dataset <- get_sentiments("afinn")
 sentiment_dataset <- arrange(sentiment_dataset, -value)
 ```
+
+```{r}
+original_iied_tweets %>% 
+  select(text) %>% 
+  unnest_tokens(word, text, drop = FALSE)
+
+original_iied_tweets %>% 
+  select(text) %>% 
+  unnest_tokens(ngram, 
+                text, 
+                token = "ngrams",
+                n = 3,
+                drop = FALSE)
+```
+
 
 
 ```{r}
@@ -257,13 +283,22 @@ sentiment_original_iied_tweets %>%
 
 This chart makes use of reorder_within() and scale_y_reordered() to allow for ordering within facets, [see here for more details](https://juliasilge.com/blog/reorder-within/).
 
+
 ```{r}
 sentiment_original_iied_tweets %>% 
-  filter(str_detect(text, "green")) %>% 
+  filter(str_detect(text, "evaluation")) %>% 
+  select(word, value) %>% 
+  add_count(word)
+```
+
+
+```{r}
+sentiment_original_iied_tweets %>% 
+  filter(str_detect(text, "evaluation")) %>% 
   select(word, value) %>% 
   unique() %>% 
   filter(!is.na(value)) %>% 
-  filter(value %in% c(-3, 5, 4)) %>% 
+  filter(value %in% c(-3, -2, -1, 5, 4, 2, 1)) %>% 
   mutate(sentiment = ifelse(value > 0, "Positive Positive", "Negative Sentiment")) %>% 
   mutate(absolute_value = abs(value)) %>% 
   mutate(word = reorder_within(word, absolute_value, sentiment)) %>% 
@@ -273,7 +308,7 @@ sentiment_original_iied_tweets %>%
   scale_y_reordered() +
   facet_wrap(~ sentiment,
              scales = "free") +
-  labs(title = "Tweets from IIED containing 'green'")
+  labs(title = "Tweets from IIED containing 'evaluation'")
 ```
 
 # Gender analysis
@@ -372,6 +407,19 @@ genderered_accounts_following_iied %>%
 ## Simpler regex
 
 The complex portion of this has more options than are widely used. Here's a much smaller set of pronoun options that covers most of your current followers.
+
+```{r}
+gender_data <- account_details_following_iied %>% 
+  add_pronoun_lgl("\\bshe/her\\b|\\bthey/them\\b|\\bhe/him\\b|\\bhe/they\\b|\\bshe/they\\b|\\bshe/hers\\b|\\bhe/his\\b") %>% 
+  filter(pronoun_pairing_lgl == TRUE) %>%
+  parse_description_pronouns()
+```
+
+```{r}
+lookup_users(gender_data$user_id) %>% 
+  left_join(gender_data)
+```
+
 
 ```{r}
 account_details_following_iied %>% 
