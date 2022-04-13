@@ -1,0 +1,138 @@
+---
+title: "IIED Email Follow up"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rtweet)
+library(gt)
+library(tidyverse)
+library(gtools)
+```
+
+# Get data
+
+## Obtain new data
+
+I have completely commented out thse code chunks which obtains new data.
+
+- Tweets mentioning
+
+```{r, eval=FALSE}
+# tweets_mention_iied = search_tweets(
+#   "IIED",    # the #hashtag or phrase you want to search
+#   n = 4000,              # number of tweets to capture
+#   type = "recent",       # recent | mixed | popular
+#   include_rts = FALSE,   # no retweets
+#   verbose = TRUE,
+#   retryonratelimit = FALSE,    # set to true if you want it to run again
+#   lang = "en"            # English language tweets
+# )
+# tweets_mention_iied %>% 
+#   write_rds("data/tweets_mention_iied.rds")
+```
+
+- IIED Timeline
+
+```{r, eval=FALSE}
+# tweets_timeline_iied <- get_timeline(
+#   user = "IIED",
+#   n = 3200
+# )
+# tweets_timeline_iied %>% 
+#   write_rds("data/tweets_timeline_iied.rds")
+```
+
+- Followers
+
+```{r, eval=FALSE}
+# accounts_followed_by_iied <- get_friends("iied", n = 7E4)
+# 
+# accounts_following_iied <- get_followers("iied", n = 7E4)
+# 
+# account_details_followed_by_iied <- lookup_users(accounts_followed_by_iied$user_id)
+# 
+# account_details_followed_by_iied %>% 
+#   write_rds("data/account_details_followed_by_iied.rds")
+# 
+# account_details_following_iied <- lookup_users(accounts_following_iied$user_id)
+# 
+# account_details_following_iied %>% 
+#   write_rds("data/account_details_following_iied.rds")
+```
+
+## Read in old data
+
+```{r, echi=FALSE}
+tweets_mention_iied <- read_rds("data/tweets_mention_iied.rds")
+tweets_timeline_iied <- read_rds("data/tweets_timeline_iied.rds")
+account_details_following_iied <- read_rds("data/account_details_following_iied.rds") %>% 
+  select(user_id, description, everything()) 
+
+account_details_followed_by_iied <- read_rds("data/account_details_followed_by_iied.rds") %>% 
+  select(user_id, description, everything()) 
+```
+
+# Get follower follow counts
+
+The `account_details_followed_by_iied` contains the number of follows
+
+```{r}
+account_details_followed_by_iied %>% 
+  select(user_id, screen_name, followers_count) %>% 
+  arrange(desc(followers_count))
+```
+
+Same with `account_details_following_iied`
+
+```{r}
+account_details_following_iied %>% 
+  select(user_id, screen_name, followers_count) %>% 
+  arrange(desc(followers_count))
+```
+
+The `lookup_users()` function can be given a vector of user IDs so doesn't need to be iterated manually.
+
+# Iterating with lappy and the {purrr} package
+
+The lapply function and its relatives are part of base R and are quite weird in how they work.
+
+We'd strongly recommend using the {purrr} package and its family of map() functions, they are used like this
+
+```{r}
+top_5_accounts_following_iied <- account_details_following_iied %>% 
+  select(user_id, screen_name, followers_count) %>% 
+  slice_max(followers_count, n = 5)
+```
+
+```{r}
+account_details_following_iied %>% 
+  select(user_id, screen_name, followers_count) %>% 
+  filter(followers_count < 5000) %>% 
+  slice_max(followers_count, n = 10)
+```
+
+
+
+```{r}
+followers_of_iied_top_5_following <- top_5_accounts_following_iied %>% 
+  pull(user_id) %>% 
+  map_df(~get_followers(.x)) %>% 
+  pull(user_id) %>% 
+  lookup_users()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
