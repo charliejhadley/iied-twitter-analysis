@@ -9,6 +9,9 @@ library(rtweet)
 library(gt)
 library(tidyverse)
 library(gtools)
+library(tidygraph)
+library(ggraph)
+library(lubridate)
 ```
 
 # Get data
@@ -114,7 +117,6 @@ account_details_following_iied %>%
 ```
 
 
-
 ```{r}
 followers_of_iied_top_5_following <- top_5_accounts_following_iied %>% 
   pull(user_id) %>% 
@@ -124,8 +126,355 @@ followers_of_iied_top_5_following <- top_5_accounts_following_iied %>%
 ```
 
 
+# Avoiding the rate limit
+
+I've gone and found a function to get around the lookup_users() rate limit from here https://community.rstudio.com/t/exceeding-rate-limit-with-lookup-user-error-in-my-loop/71259/13.
+
+Please note this function waits a whole 15 MINUTES and so running this can be expensive!
+
+```{r}
+lookup_many_users <- function(user_ids, retry_limit = 5){
+
+  breaks <- seq(1, length(user_ids), 89999)
+  
+  if(breaks[length(breaks)] != length(user_ids)){
+    breaks <- c(breaks, length(user_ids))
+  }
+  
+  user_details <- NULL
+  
+  for(i in 1:(length(breaks) -1)){
+    
+    attempt <- 0
+    
+    while(is.null(user_details) && attempt <= retry_limit){
+      
+      attempt <- attempt + 1
+      
+      try({
+        user_details <- lookup_users(user_ids[breaks[i]:breaks[i+1]])
+        
+        Sys.sleep(15 * 60) #wait 15 minutes for rate limit to reset before proceeding
+      })
+    }
+    
+    if(is.null(user_details)){
+      stop("failed to get users")
+    }    
+    
+    if(i == 1){
+      all_user_details <- user_details
+    } else {
+      all_user_details <- rbind(all_user_details, user_details)
+    }
+    
+    user_details <- NULL
+  }
+  
+  return(all_user_details)
+  
+}
+```
+
+Here's a little function for intelligently switching between the two approaches:
+
+```{r}
+lookup_users_smart <- function(user_ids){
+  
+  if(length(user_ids > 90000)){
+    
+    lookup_many_users(user_ids)
+    
+  } else {
+    
+    lookup_users(user_ids)
+    
+  }
+  
+}
+```
 
 
+
+# Ego Network
+
+## Mutuals
+
+First of all let's look at the mutuals. Those folks who 
+
+```{r}
+account_details_mutuals <- account_details_following_iied %>% 
+  filter(user_id %in% account_details_followed_by_iied$user_id) %>% 
+  arrange(desc(followers_count)) %>% 
+  select(screen_name, description, followers_count, everything())
+```
+
+The documentation for get_friends() claims that 5,000 is a cutoff:
+
+> Number of friends (user IDs) to return. Defaults to 5,000, which is the maximum returned by a single API call. Users are limited to 15 of these requests per 15 minutes. Twitter limits the number of friends a user can have to 5,000. To follow more than 5,000 accounts (to have more than 5 thousand "friends") accounts must meet certain requirements (e.g., a certain ratio of followers to friends). Consequently, the vast majority of users follow fewer than five thousand accounts. This function has been oriented accordingly (i.e., it assumes the maximum value of n is 5000). To return more than 5,000 friends for a single user, call this function multiple times with requests after the first using the page parameter.
+
+So let's filter out those individuals. get_followers() is limited to 75,000 so let's initially filter out individuals with more followers than that. I've also set the minimum follower count to 1,000 to reduce the data size. You might not wish to do this.
+
+```{r}
+target_mutuals_details <- account_details_mutuals %>% 
+  filter(friends_count <= 5000,
+         followers_count <= 75000) %>% 
+  filter(followers_count > 1000,
+         friends_count > 200)
+```
+
+Let's also calculate the follow ratio and filter for 0.8 - 1.2
+
+```{r}
+target_mutuals_details <- target_mutuals_details %>% 
+  mutate(follow_ratio = followers_count / friends_count) %>% 
+  filter(follow_ratio > 0.8,
+         follow_ratio < 1.2)
+```
+
+
+We need to get both followers and following for each of these people. Let's build up a function to do this
+
+- Each function makes a tibble for the edges of our network 
+
+```{r}
+tibble(
+  from = "IIED",
+  to = "account followed by IIED"
+)
+```
+
+- Each function uses `retryonratelimit = TRUE` so it can constantly retry!
+
+```{r}
+make_followers_data <- function(user_id){
+  
+  followers <- get_followers(user_id, retryonratelimit = TRUE)
+  
+  tibble(
+    from = as.character(followers$user_id),
+    to = as.character(user_id)
+  )
+}
+```
+
+Now we map this to get the followers edges. THIS WILL TAKE HOURS AND HOURS TO RUN.
+
+```{r}
+# This will take multiple hours to run!!!
+# mutuals_followers_edges <- target_mutuals_details %>%
+#   arrange(followers_count) %>% 
+#   # slice(1:5) %>% 
+#   pull(user_id) %>% 
+#   map_df(~make_followers_data(.x))
+# 
+# mutuals_followers_edges %>% 
+#   write_csv("data/mutuals_followers_edges.csv")
+
+mutuals_followers_edges <- read_csv("data/mutuals_followers_edges.csv", col_types = "cc")
+```
+
+Let's also get the following edges
+
+It looks like get_friends() doesn't work for locked accounts, eg get_friends("charisejeanine_"). This is a bug I've reported [here](https://github.com/ropensci/rtweet/issues/341). This really sucks as some accounts have gone private since we last used lookup_users(). Which means you would beed to re-run lookup_users() to ensure things work. 
+
+I've also only done this for a small number as this is already taking a long time to write!
+
+```{r}
+precheck_targets_for_protected <- target_mutuals_details %>% 
+  pull(user_id) %>% 
+  lookup_users()
+  
+
+mutuals_friends_edges <- target_mutuals_details %>% 
+  arrange(friends_count) %>% 
+  relocate(friends_count) %>% 
+  slice(1:5) %>% 
+  pull(user_id) %>% 
+  get_friends(retryonratelimit = TRUE)
+```
+
+Now we combine these together.
+
+```{r}
+mutuals_friends_edges <- mutuals_friends_edges %>% 
+  mutate(across(everything(), ~as.character(.x)))
+
+mutuals_followers_edges <- mutuals_followers_edges %>% 
+  mutate(across(everything(), ~as.character(.x)))
+
+mutuals_all_edges <- bind_rows(mutuals_followers_edges,
+          mutuals_following_edges) %>% 
+  unique()
+```
+
+## Constructing the graph
+
+Construct a tidygraph object from the edges:
+
+```{r}
+mutuals_graph_raw <- mutuals_all_edges %>% 
+  drop_na() %>% 
+  as_tbl_graph()
+```
+
+We need to create a binding between the node ids and names:
+
+```{r}
+mutuals_graph_raw <- mutuals_graph_raw %>% 
+  mutate(node_id = row_number())
+```
+
+Let's find the IIED node
+
+```{r}
+iied_node_id <- mutuals_graph_raw %>% 
+  filter(name == "39719681") %>% 
+  pull(node_id)
+```
+
+This is a simply HUGE graph. It would be meaningless to visualise or to analyse. We need to trim the size of the graph a lot.
+
+
+### Centrality measures
+
+There are **many** different measures for node and edge importance. One of the simples is node degree - how many edges does it have?
+
+All of the `centrality_*()` functions are used in the same way, let's add node degree to the graph.
+
+```{r}
+mutuals_graph_analysis <- mutuals_graph_raw %>% 
+  mutate(node_degree = centrality_degree())
+```
+
+Let's pull out this information to visualise the node degree.
+
+```{r}
+mutuals_graph_analysis %>% 
+  as_tibble() %>% 
+  count(node_degree) %>% 
+  ggplot(aes(x = node_degree, y = "")) +
+  geom_boxplot()
+```
+
+We could try throwing away all nodes that are only connected too 3 or fewer other nodes. This significantly reduces the size of the graph.
+
+```{r}
+mutuals_node_degree_abv_3 <- mutuals_graph_analysis %>% 
+  filter(node_degree > 3)
+```
+
+Notice how the graph has "42 components". This is most easily understood as their being 42 subgraphs within the graph. Let's extract the largest connected component:
+
+```{r}
+mutuals_node_degree_abv_3_largest_component <- mutuals_node_degree_abv_3 %>% 
+  mutate(component = group_components()) %>% 
+  filter(component == 1)
+```
+
+### Getting information about the nodes
+
+Now we've got a more meaningfully sized graph we can think about getting information about the nodes. We want to join this together with the information we'd get that lookup_users.
+
+Let's do this in stages
+
+```{r}
+nodes_with_existing_info <- mutuals_node_degree_abv_3_largest_component %>% 
+  as_tibble() %>% 
+  filter(name %in% as.character(account_details_mutuals$user_id))
+
+nodes_without_info <- mutuals_node_degree_abv_3_largest_component %>% 
+  as_tibble() %>% 
+  filter(!name %in% as.character(account_details_mutuals$user_id))
+```
+
+```{r}
+new_user_info <- nodes_without_info %>% 
+  pull(name) %>% 
+  lookup_users()
+```
+
+We need to do some messing about to connect these nicely
+
+```{r}
+new_user_info <- new_user_info %>% 
+  select(-contains("status"), -contains("reply"))
+
+account_details_mutuals_tidy <- account_details_mutuals %>% 
+  mutate(user_id = as.character(user_id))
+
+account_details_for_graph <- account_details_mutuals_tidy %>% 
+  bind_rows(new_user_info)
+```
+
+Now we can join this data together with the graph
+
+```{r}
+mutuals_node_degree_abv_3_largest_component <- mutuals_node_degree_abv_3_largest_component %>% 
+  left_join(account_details_for_graph,
+            by = c("name" = "user_id"))
+```
+
+
+# Visualising graph
+
+```{r}
+# mutuals_friends_edges %>% 
+#   write_rds("mutuals_friends_edges.rds")
+# 
+# account_details_for_graph %>% 
+#   write_rds("account_details_for_graph.rds")
+
+read_rds("mutuals_friends_edges.rds")
+
+read_rds("account_details_for_graph.rds")
+```
+
+Let's step back from the complicated graph to focus on how to visualise graph with the {ggraph} package.
+
+To aid this let me create a quick graph containing the mutual friends edges:
+
+```{r}
+mutual_friends_graph <- mutuals_friends_edges %>% 
+  as_tbl_graph() %>% 
+  rename(user_id = name) %>% 
+  left_join(mutate(account_details_for_graph, user_id =  as.character(user_id)))
+```
+
+We need to visualise both the nodes and edges with different geoms:
+
+```{r}
+mutual_friends_graph %>% 
+  ggraph() +
+  geom_node_point() +
+  geom_edge_link()
+```
+
+That's a mess. And it's because the graph is currently considered to be directed AND has lots of edges. Let's turn this to an undirected graph and extract only those nodes with a degree above 1
+
+```{r}
+mutual_friends_graph_degree_above_1 <- mutual_friends_graph %>% 
+  to_undirected() %>% 
+  mutate(degree = centrality_degree()) %>% 
+  filter(degree > 1)
+
+mutual_friends_graph_degree_above_1 %>% 
+  ggraph() +
+  geom_node_point() +
+  geom_edge_link()
+```
+
+Now we finally have a network that looks kind of meaningful and we could hope to present to somebody else. Let me add some beauty to it.
+
+- Name those nodes with edge degree greater than 2
+
+```{r}
+mutual_friends_graph_degree_above_1 %>% 
+  ggraph(layout = 'kk') +
+  geom_edge_fan() +
+  geom_node_point() +
+  geom_node_label(aes(label = ifelse(degree > 2, screen_name, NA)))
+```
 
 
 
